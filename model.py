@@ -1,38 +1,22 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
-class FishClassifier(nn.Module):
-    def __init__(self, num_classes):
-        super(FishClassifier, self).__init__()
+def get_model(num_classes):
+    """
+    Tworzy i zwraca model EfficientNet-B0 przystosowany do klasyfikacji obrazów na określoną liczbę klas.
+    """
+    # Wczytanie modelu EfficientNet-B0 z pretrenowanymi wagami ImageNet
+    model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
 
-        # Warstwy konwolucyjne + MaxPooling
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)  # Dodatkowa warstwa konwolucyjna
-        self.pool = nn.MaxPool2d(2, 2)  # Pooling 2x2 zmniejsza rozmiary o połowę
+    # EfficientNet-B0 posiada wbudowaną warstwę klasyfikacyjną model.classifier, która składa się z kilku elementów.
+    # Domyślnie ostatnia warstwa to warstwa w pełni połączona (fully connected), dostosowana do 1000 klas z ImageNet.
+    # Jednak my chcemy dostosować model do naszej własnej liczby klas (num_classes), dlatego musimy ją zamienić.
 
-        # Obliczenie wejścia do fc1 dynamicznie
-        self.fc1_input_size = self._get_fc_input_size()
-        self.fc1 = nn.Linear(self.fc1_input_size, 512)
-        self.fc2 = nn.Linear(512, num_classes)
+    # Pobieramy liczbę wejściowych neuronów z oryginalnej warstwy (czyli tyle, ile neuronów przychodzi z poprzedniej warstwy modelu).
+    # Następnie tworzymy nową warstwę w pełni połączoną (Linear), która ma tyle wyjść, ile klas mamy w naszym zadaniu.
+    model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
 
-    def _get_fc_input_size(self):
-        """
-        Oblicza liczbę cech wejściowych do fc1 na podstawie danych wejściowych.
-        """
-        with torch.no_grad():
-            sample_input = torch.zeros(1, 3, 224, 224)  # Przykładowy obraz
-            sample_output = self.pool(F.relu(self.conv1(sample_input)))
-            sample_output = self.pool(F.relu(self.conv2(sample_output)))
-            sample_output = self.pool(F.relu(self.conv3(sample_output)))  # Nowa warstwa konwolucyjna
-            return sample_output.view(1, -1).size(1)  # Pobranie liczby cech
+    # Przeniesienie modelu na odpowiednie urządzenie (GPU, jeśli dostępne, inaczej CPU)
+    return model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))  # Dodatkowy pooling przed fc1
-        x = x.view(x.size(0), -1)  # Spłaszczenie do 1D
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x

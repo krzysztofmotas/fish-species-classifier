@@ -1,77 +1,96 @@
 import torch
 import torch.optim as optim
 import torch.nn as nn
-from tqdm import tqdm  # Progress bar
-import os
+import torch.cuda.amp as amp  # Automatyczna precyzja mieszana dla lepszej wydajności
+from tqdm import tqdm  # Pasek postępu
 
-def train_model(model, train_loader, val_loader, device, num_epochs=10):
-    """
-    Trenuje model z walidacją i zapisem po każdej epoce.
+def train_model(model, train_loader, val_loader, num_epochs=15, save_path="efficientnet_b0_fish_classifier.pth"):
+    # Sprawdzenie, czy dostępna jest karta graficzna (GPU), jeśli nie, używamy CPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Używane urządzenie: {device}")
 
-    Args:
-        model (nn.Module): Model do trenowania.
-        train_loader: DataLoader dla zbioru treningowego.
-        val_loader: DataLoader dla zbioru walidacyjnego.
-        device: CPU lub GPU.
-        num_epochs (int): Liczba epok treningu.
-    """
-
-    # Przeniesienie modelu na GPU, jeśli dostępne
-    model.to(device)
-
-    # Definiowanie funkcji straty i optymalizatora
+    # Funkcja błędu - CrossEntropyLoss jest często używana w klasyfikacji
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    # Ścieżka do zapisu modelu
-    MODEL_PATH = "models/fish_classifier.pth"
-    os.makedirs("models", exist_ok=True)  # Tworzenie folderu jeśli nie istnieje
+    # Optymalizator - Adam to popularny algorytm aktualizacji wag
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
-    # Pętla treningowa
+    # Planowanie uczenia - zmniejsza stopniowo szybkość uczenia się
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+
+    # Skaler AMP (Automatic Mixed Precision), przyspiesza trening na GPU
+    scaler = amp.GradScaler()
+
     for epoch in range(num_epochs):
-        model.train()  # Tryb trenowania
-        running_loss = 0.0  # Resetowanie strat
+        model.train()  # Ustawienie modelu w tryb treningowy
+        running_loss = 0.0
+        correct, total = 0, 0
 
-        # Tworzenie paska postępu
-        progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoka {epoch+1}/{num_epochs}")
+        print(f"\n[INFO] Epoka {epoch + 1}/{num_epochs}")
 
-        for batch_idx, (images, labels) in progress_bar:
-            images, labels = images.to(device), labels.to(device)  # Przeniesienie batcha na CPU/GPU
+        # Pasek postępu dla treningu
+        train_bar = tqdm(train_loader, desc=f"Trening {epoch + 1}/{num_epochs}", leave=True)
 
-            optimizer.zero_grad()  # Zerowanie gradientów
-            outputs = model(images)  # Przepuszczenie przez sieć
-            loss = criterion(outputs, labels)  # Obliczenie straty
-            loss.backward()  # Obliczenie gradientów
-            optimizer.step()  # Aktualizacja wag modelu
+        for images, labels in train_bar:
+            images, labels = images.to(device), labels.to(device)  # Przeniesienie danych na GPU/CPU
+
+            optimizer.zero_grad()  # Zerowanie gradientów przed kolejną iteracją
+
+            # Obliczenia z użyciem automatycznej precyzji mieszanej
+            with amp.autocast():
+                outputs = model(images)  # Przepuszczenie obrazów przez sieć neuronową
+                loss = criterion(outputs, labels)  # Obliczenie straty (błędu predykcji)
+
+            # Skalowanie gradientów przed propagacją wsteczną
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)  # Aktualizacja wag
+            scaler.update()  # Aktualizacja skali dla AMP
 
             running_loss += loss.item()  # Sumowanie strat
+            _, predicted = torch.max(outputs, 1)  # Pobranie klasy o najwyższym prawdopodobieństwie
+            correct += (predicted == labels).sum().item()  # Zliczanie poprawnych klasyfikacji
+            total += labels.size(0)  # Liczba wszystkich próbek
 
-            # Aktualizacja progress bara co batch
-            progress_bar.set_postfix(loss=f"{loss.item():.4f}")
+            train_bar.set_postfix(loss=f"{loss.item():.4f}")  # Aktualizacja paska postępu
 
+        # Obliczenie średniej straty i dokładności dla treningu
         avg_train_loss = running_loss / len(train_loader)
-        print(f"[INFO] Epoka {epoch+1} zakończona, średnia strata: {avg_train_loss:.4f}")
+        train_accuracy = correct / total
 
-        model.eval()  # Tryb ewaluacji
+        model.eval()  # Ustawienie modelu w tryb ewaluacji (wyłącza dropout i batchnorm)
         val_loss = 0.0
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                val_loss += loss.item()
+        correct, total = 0, 0
 
+        # Pasek postępu dla walidacji
+        val_bar = tqdm(val_loader, desc=f"Walidacja {epoch + 1}/{num_epochs}", leave=True)
+
+        with torch.no_grad():  # Podczas walidacji nie zapisujemy gradientów (oszczędność pamięci)
+            for images, labels in val_bar:
+                images, labels = images.to(device), labels.to(device)
+
+                with amp.autocast():  # AMP również dla walidacji
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+
+                val_loss += loss.item()
                 _, predicted = torch.max(outputs, 1)
                 correct += (predicted == labels).sum().item()
                 total += labels.size(0)
 
-        avg_val_loss = val_loss / len(val_loader)
-        accuracy = correct / total
-        print(f"[INFO] Epoka {epoch+1} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Accuracy: {accuracy:.4f}")
+                val_bar.set_postfix(loss=f"{loss.item():.4f}")
 
-        torch.save(model.state_dict(), MODEL_PATH)
-        print(f"[INFO] Model zapisany do {MODEL_PATH}")
+        # Obliczenie średniej straty i dokładności dla walidacji
+        avg_val_loss = val_loss / len(val_loader)
+        val_accuracy = correct / total
+
+        print(
+            f"[INFO] Epoka {epoch + 1}/{num_epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Accuracy: {val_accuracy:.4f}")
+
+        scheduler.step()  # Aktualizacja harmonogramu uczenia się
+
+        # Co 5 epok zapisujemy stan modelu
+        if epoch % 5 == 0:
+            torch.save(model.state_dict(), save_path)
 
     print("[INFO] Trening zakończony!")
+    torch.save(model.state_dict(), save_path)  # Zapis końcowy modelu
