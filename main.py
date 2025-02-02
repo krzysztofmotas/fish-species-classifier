@@ -2,7 +2,7 @@ import torch
 from model import get_model
 from train import train_model
 from evaluate import evaluate_model
-from dataset import get_dataloaders
+from dataset import get_dataloaders, FishDataset
 from predict_image import predict_fish
 
 # Włączenie optymalizacji CUDA dla szybszego działania na GPU
@@ -14,7 +14,7 @@ train_loader, val_loader, test_loader, num_classes = get_dataloaders()
 if __name__ == '__main__':
     if input("Czy chcesz załadować zapisany model? (tak/nie): ").strip().lower() == "tak":
         model = get_model(num_classes)  # Tworzenie modelu EfficientNet-B0
-        model.load_state_dict(torch.load("efficientnet_b0_fish_classifier.pth"))  # Wczytanie wag
+        model.load_state_dict(torch.load("efficientnet_b0_fish_classifier.pth", weights_only=True))  # Wczytanie wag
         print("[INFO] Model załadowany.")
     else:
         model = get_model(num_classes)  # Tworzenie nowego modelu
@@ -30,7 +30,10 @@ if __name__ == '__main__':
             print("Zakończono działanie programu.")
             break
 
-        predicted_class = predict_fish(model, image_path)
-        print(f"[INFO] Przewidywana klasa: {predicted_class}")
+        dataset = FishDataset("fishes/images/numbered", "fishes/final_all_index.txt")
+        class_to_idx = dataset.class_to_idx
+
+        index, name = predict_fish(model, image_path, class_to_idx)
+        print(f"[INFO] Przewidywana klasa: {index} - {name}")
 
 
