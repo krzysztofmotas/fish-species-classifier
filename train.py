@@ -1,7 +1,9 @@
+import sys
+
 import torch
 import torch.optim as optim
 import torch.nn as nn
-import torch.cuda.amp as amp  # Automatyczna precyzja mieszana dla lepszej wydajności
+import torch.amp as amp
 from tqdm import tqdm  # Pasek postępu
 
 def train_model(model, train_loader, val_loader, num_epochs=15, save_path="efficientnet_b0_fish_classifier.pth"):
@@ -19,14 +21,21 @@ def train_model(model, train_loader, val_loader, num_epochs=15, save_path="effic
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
     # Skaler AMP (Automatic Mixed Precision), przyspiesza trening na GPU
-    scaler = amp.GradScaler()
+    scaler = amp.GradScaler('cuda')
 
     for epoch in range(num_epochs):
+        if epoch > 0:
+            train_bar.close()
+            val_bar.close()
+
+            print(f"\n[INFO] Epoka {epoch}/{num_epochs} | Strata treningowa: {avg_train_loss:.4f} | Strata walidacyjna: {avg_val_loss:.4f} | Dokładność: {val_accuracy:.4f}", flush=True)
+
         model.train()  # Ustawienie modelu w tryb treningowy
         running_loss = 0.0
         correct, total = 0, 0
 
-        print(f"\n[INFO] Epoka {epoch + 1}/{num_epochs}")
+        print(f"\n[INFO] Epoka {epoch + 1}/{num_epochs}", flush=True)
+        sys.stdout.flush()
 
         # Pasek postępu dla treningu
         train_bar = tqdm(train_loader, desc=f"Trening {epoch + 1}/{num_epochs}", leave=True)
@@ -37,7 +46,7 @@ def train_model(model, train_loader, val_loader, num_epochs=15, save_path="effic
             optimizer.zero_grad()  # Zerowanie gradientów przed kolejną iteracją
 
             # Obliczenia z użyciem automatycznej precyzji mieszanej
-            with amp.autocast():
+            with amp.autocast('cuda'):
                 outputs = model(images)  # Przepuszczenie obrazów przez sieć neuronową
                 loss = criterion(outputs, labels)  # Obliczenie straty (błędu predykcji)
 
@@ -57,6 +66,8 @@ def train_model(model, train_loader, val_loader, num_epochs=15, save_path="effic
         avg_train_loss = running_loss / len(train_loader)
         train_accuracy = correct / total
 
+        train_bar.close()
+
         model.eval()  # Ustawienie modelu w tryb ewaluacji (wyłącza dropout i batchnorm)
         val_loss = 0.0
         correct, total = 0, 0
@@ -68,7 +79,7 @@ def train_model(model, train_loader, val_loader, num_epochs=15, save_path="effic
             for images, labels in val_bar:
                 images, labels = images.to(device), labels.to(device)
 
-                with amp.autocast():  # AMP również dla walidacji
+                with amp.autocast('cuda'):  # AMP również dla walidacji
                     outputs = model(images)
                     loss = criterion(outputs, labels)
 
@@ -79,12 +90,11 @@ def train_model(model, train_loader, val_loader, num_epochs=15, save_path="effic
 
                 val_bar.set_postfix(loss=f"{loss.item():.4f}")
 
+        val_bar.close()
+
         # Obliczenie średniej straty i dokładności dla walidacji
         avg_val_loss = val_loss / len(val_loader)
         val_accuracy = correct / total
-
-        print(
-            f"[INFO] Epoka {epoch + 1}/{num_epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Accuracy: {val_accuracy:.4f}")
 
         scheduler.step()  # Aktualizacja harmonogramu uczenia się
 
